@@ -19,32 +19,34 @@
   #main { flex: 1; overflow: auto; padding: 12px 16px; position: relative; }
   a.link { color: #555; cursor: pointer; text-decoration: underline dotted; }
   .muted { color: #888; }
-  .pane { border: 1px solid #ddd; border-radius: 4px; margin-bottom: 4px; }
-  .pane header { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; background: #f6f8fa; border-bottom: 1px solid #ddd; font: 12px ui-monospace, monospace; }
-  .pane header b { font-size: 13px; }
-  .pane header .spacer { flex: 1; }
-  .pathnav { display: inline-flex; gap: 4px; align-items: center; }
-  .pathnav select { max-width: 360px; font: 12px ui-monospace, monospace; }
-  .decisions { margin: 0; padding: 6px 8px 6px 28px; background: #fafbfc; border-bottom: 1px solid #ddd; font: 12px ui-monospace, monospace; }
-  div.decisions { padding-left: 8px; }
-  pre.code { margin: 0; padding: 4px 0; font: 13px/1.45 ui-monospace, monospace; overflow-x: auto; }
-  pre.code div { padding-right: 8px; white-space: pre; }
-  pre.code .ln { display: inline-block; width: 4em; padding-right: 1em; text-align: right; color: #aaa; user-select: none; }
-  pre.code .fn { cursor: pointer; }
-  pre.code .fn:hover { background: #eef3ff; }
-  pre.code .call { background: #fff3b0; }
-  pre.code .end { background: #e6ffec; }
-  pre.code .gap { color: #999; background: #f6f8fa; font-style: italic; }
+
+  .box { --c: #8c959f; border: 1px solid #d0d7de; border-left: 3px solid var(--c); border-radius: 4px; background: #fff; }
+  .box.d1 { --c: #0969da; } .box.d2 { --c: #8250df; } .box.d3 { --c: #bf3989; }
+  .box.d4 { --c: #bc4c00; } .box.d5 { --c: #1a7f37; }
+  .box header { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; background: #f6f8fa; border-bottom: 1px solid #d0d7de; font: 12px ui-monospace, monospace; }
+  .box header b { font-size: 13px; }
+  .box header .spacer { flex: 1; }
+  .nest { margin: 2px 8px 6px 2.5em; }
+
+  .code { padding: 4px 0; font: 13px/1.45 ui-monospace, monospace; overflow-x: auto; }
+  .code > .line { padding-right: 8px; white-space: pre; }
+  .code .mk { display: inline-block; width: 1.4em; text-align: center; color: #0969da; cursor: pointer; user-select: none; }
+  .code .mk:empty { cursor: auto; }
+  .code .mk.warn { color: #bbb; }
+  .code .ln { display: inline-block; width: 3.5em; padding-right: 1em; text-align: right; color: #aaa; user-select: none; }
+  .code .fn { cursor: pointer; }
+  .code .fn:hover { background: #eef3ff; }
+  .code .call { background: #fff3b0; }
+  .code .gap { color: #777; background: #f6f8fa; font-style: italic; cursor: pointer; }
+  .code .gap:hover { background: #eef3ff; }
   .badge { display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 8px; background: #e4e8ee; color: #555; font-size: 11px; }
-  .badge.taken { background: #fff3b0; color: #6b5300; }
-  .badge.endb { background: #c9f2d3; color: #116329; }
-  .arrow { text-align: center; color: #aaa; margin-bottom: 4px; }
-  .popover { position: absolute; z-index: 10; max-height: 50vh; overflow: auto; min-width: 300px; padding: 4px; background: #fff; border: 1px solid #bbb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+
+  .popover { position: absolute; z-index: 10; max-height: 50vh; overflow: auto; min-width: 300px; max-width: 520px; padding: 4px; background: #fff; border: 1px solid #bbb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
   .popover button { display: block; width: 100%; padding: 3px 6px; border: 0; background: none; text-align: left; font: 12px ui-monospace, monospace; cursor: pointer; }
   .popover button:hover { background: #eef; }
   .popover .muted { padding: 3px 6px; font-size: 12px; }
   .popover button .muted { padding: 0; }
-  .popover hr { margin: 4px 0; border: 0; border-top: 1px solid #ddd; }
+  .popover .warn { padding: 4px 6px; font-size: 12px; color: #6b5300; background: #fff8c5; border-radius: 3px; margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -55,7 +57,7 @@
   </div>
   <div id="tree"></div>
 </nav>
-<main id="main"><p class="muted">Pick a file on the left, then click a function definition to see its callers.</p></main>
+<main id="main"><p class="muted">Pick a file on the left. Click a function definition to see its callers, or ▸ next to a call to expand it inline.</p></main>
 <script>
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -63,17 +65,29 @@ const esc = (s) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 const enc = encodeURIComponent;
 
 let files = [];
-let current = null; // the open file: {file, lines, funcs}
-// stack[0] is the function first clicked; stack[i+1] is a caller of stack[i],
-// shown from its func line down to callLine (where it calls stack[i]).
-// Empty when showing a whole file.
-let stack = [];
+let current = null; // the open file: {file, lines, funcs, calls: Map<line, [{fid, call}]>}
+// The trace is a tree of function boxes. Each node is a function body; its
+// children are callee bodies expanded inline under a call line. Choosing a
+// caller wraps the tree: the caller becomes the new root. null while showing
+// a whole file.
+let root = null;
+const nodes = new Map(); // uid -> node
+let nextUID = 1;
 let popover = null;
 
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+function groupByLine(calls) {
+  const m = new Map();
+  for (const c of calls) {
+    if (!m.has(c.line)) m.set(c.line, []);
+    m.get(c.line).push(c);
+  }
+  return m;
 }
 
 // ---- file tree ----
@@ -89,14 +103,13 @@ function renderTree() {
     $('#tree').innerHTML = files.filter((p) => p.toLowerCase().includes(q))
       .map((p) => `<a href="#${enc(p)}" data-file="${esc(p)}">${esc(p)}</a>`).join('');
   } else {
-    const root = { dirs: {}, files: [] };
+    const tree = { dirs: {}, files: [] };
     for (const p of files) {
-      const parts = p.split('/');
-      let node = root;
-      for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: [] };
+      let node = tree;
+      for (const d of p.split('/').slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: [] };
       node.files.push(p);
     }
-    $('#tree').innerHTML = treeHTML(root, '');
+    $('#tree').innerHTML = treeHTML(tree, '');
   }
   if (current) markTree(current.file);
 }
@@ -125,183 +138,180 @@ $('#tree').onclick = (e) => {
   openFile(a.dataset.file);
 };
 
+// ---- rendering helpers ----
+
+// marker returns the gutter marker for a line's calls: ▸ expandable, ▾ expanded,
+// ▹ (grey) only calls that can't be expanded.
+function marker(calls, expanded) {
+  if (!calls?.length) return '';
+  if (expanded) return { glyph: '▾', cls: '', title: 'Collapse' };
+  if (calls.some((c) => c.kind === 'static')) return { glyph: '▸', cls: '', title: 'Expand call inline' };
+  return { glyph: '▹', cls: 'warn', title: "Can't expand: the target is decided at run time" };
+}
+
+// lineHTML renders one source line. opts: fn ({id, callers, uid}) makes it a
+// clickable function definition; mk ({glyph, cls, title}) adds a call marker
+// with data attributes in mkAttrs; cls adds classes.
+function lineHTML(n, html, opts = {}) {
+  const { fn, mk, mkAttrs = '', cls = '' } = opts;
+  const fnAttrs = fn ? ` data-fn="${esc(fn.id)}"${fn.uid ? ` data-uid="${fn.uid}"` : ''}` : '';
+  const badge = fn ? `<span class="badge" title="callers">${fn.callers}</span>` : '';
+  const gutter = mk
+    ? `<span class="mk ${mk.cls}" data-line="${n}"${mkAttrs} title="${esc(mk.title)}">${mk.glyph}</span>`
+    : '<span class="mk"></span>';
+  return `<div class="line ${cls}${fn ? ' fn' : ''}"${fnAttrs} data-n="${n}">${gutter}<span class="ln">${n}</span>${html}${badge}</div>`;
+}
+
 // ---- whole-file view ----
 
 async function openFile(file, line) {
   closePopover();
   const d = await getJSON('/api/file?file=' + enc(file));
-  current = { file, ...d };
-  stack = [];
+  const calls = new Map();
+  for (const f of d.funcs) {
+    for (const c of f.calls) {
+      if (!calls.has(c.line)) calls.set(c.line, []);
+      calls.get(c.line).push({ fid: f.id, call: c });
+    }
+  }
+  current = { file, ...d, calls };
+  root = null;
   history.replaceState(null, '', '#' + enc(file));
   markTree(file);
 
   const byLine = new Map(d.funcs.map((f) => [f.start, f]));
-  main.innerHTML = `<div class="pane"><header><b>${esc(file)}</b></header><pre class="code chroma">` +
+  main.innerHTML = `<section class="box"><header><b>${esc(file)}</b></header><div class="code chroma">` +
     d.lines.map((l, i) => {
-      const f = byLine.get(i + 1);
-      return lineHTML(i + 1, l, f && { id: f.id, callers: f.callers });
-    }).join('') + '</pre></div>';
+      const n = i + 1, f = byLine.get(n), lineCalls = calls.get(n)?.map((x) => x.call);
+      return lineHTML(n, l, { fn: f && { id: f.id, callers: f.callers }, mk: marker(lineCalls, false) });
+    }).join('') + '</div></section>';
 
-  const target = line && main.querySelector(`[data-line="${line}"]`);
+  const target = line && main.querySelector(`.line[data-n="${line}"]`);
   if (target) target.scrollIntoView({ block: 'center' });
   else main.scrollTop = 0;
 }
 
-// fn, if set, makes the line a clickable function definition. extra is
-// appended HTML (badges).
-function lineHTML(n, html, fn, cls = '', extra = '') {
-  if (fn) cls += ' fn';
-  const attrs = fn ? ` data-fn="${esc(fn.id)}"${fn.frame !== undefined ? ` data-frame="${fn.frame}"` : ''}` : '';
-  const badge = fn ? `<span class="badge" title="callers">${fn.callers}</span>` : '';
-  return `<div data-line="${n}" class="${cls.trim()}"${attrs}><span class="ln">${n}</span>${html}${badge}${extra}</div>`;
+// ---- trace view ----
+
+async function loadNode(id) {
+  const { func, callers, calls } = await getJSON('/api/func?id=' + enc(id));
+  const { from, lines } = await getJSON(`/api/lines?file=${enc(func.file)}&from=${func.start}&to=${func.end}`);
+  const node = {
+    uid: nextUID++, func, callers, calls: groupByLine(calls), from, lines,
+    children: new Map(), // "line:col" -> node
+    parent: null, key: null,
+    restFrom: null, restOpen: false, // lines after restFrom are collapsed (set when wrapping)
+    wrapped: null, // key of the child this node was wrapped around, if any
+  };
+  nodes.set(node.uid, node);
+  return node;
 }
 
-// ---- stacked view ----
+const callKey = (c) => `${c.line}:${c.col}`;
 
-// mode is 'code' or 'paths'. In paths mode, paths.list holds the function's
-// paths (for a caller pane, only those reaching callLine) and pathIdx the
-// selected one.
-async function frame(id, callLine) {
-  const { func, callers } = await getJSON('/api/func?id=' + enc(id));
-  const { from, lines } = await getJSON(`/api/lines?file=${enc(func.file)}&from=${func.start}&to=${callLine ?? func.end}`);
-  return { func, callers, callLine, from, lines, mode: 'code', paths: null, pathIdx: 0 };
+function attach(parent, child, call) {
+  child.parent = parent;
+  child.key = callKey(call);
+  parent.children.set(child.key, child);
 }
 
-function renderStack() {
-  let html = '';
-  for (let i = stack.length - 1; i >= 0; i--) {
-    const f = stack[i];
-    const path = f.mode === 'paths' ? f.paths.list[f.pathIdx] : null;
-    html += `<section class="pane"><header><b>${esc(f.func.name)}</b>` +
-      `<a class="link" data-open="${esc(f.func.file)}" data-line="${f.func.start}">${esc(f.func.file)}:${f.func.start}</a>`;
-    if (f.mode === 'paths') html += pathControls(f, i);
-    html += '<span class="spacer"></span>';
-    if (i > 0) html += `<button data-pop="${i}" title="Remove this and the panes above it">×</button>`;
-    else html += `<button data-open="${esc(current.file)}">← ${esc(current.file.split('/').pop())}</button>`;
-    html += '</header>';
-    if (path && showDecisions) html += decisionsHTML(path);
-    html += `<pre class="code chroma">${path ? pathLines(f, i, path) : codeLines(f, i)}</pre></section>`;
-    if (i > 0) html += '<div class="arrow">↓</div>';
-  }
-  main.innerHTML = html;
-}
-
-const fnLine = (f, i, n) => n === f.func.start && { id: f.func.id, callers: f.callers.length, frame: i };
-
-function codeLines(f, i) {
-  return f.lines.map((l, j) => {
-    const n = f.from + j;
-    return lineHTML(n, l, fnLine(f, i, n), n === f.callLine ? 'call' : '');
-  }).join('');
-}
-
-// ---- execution paths ----
-
-let showDecisions = localStorage.getItem('showDecisions') === '1';
-
-const endText = (p) => p.end === 'reaches line' ? 'reaches the call' : `${p.end} at line ${p.endLine}`;
-
-function pathControls(f, i) {
-  const n = f.paths.list.length;
-  if (!n) {
-    return `<span class="muted">${f.callLine ? 'no paths reach this call' : 'no paths found'}</span>` +
-      `<button data-code="${i}">Full code</button>`;
-  }
-  const opts = f.paths.list.map((p, k) =>
-    `<option value="${k}"${k === f.pathIdx ? ' selected' : ''}>Path ${k + 1} of ${n}${f.paths.truncated ? '+' : ''} · ${esc(endText(p))}</option>`).join('');
-  return `<span class="pathnav"><button data-nav="-1" data-frame="${i}" title="Previous path">◀</button>` +
-    `<select data-pathsel="${i}">${opts}</select>` +
-    `<button data-nav="1" data-frame="${i}" title="Next path">▶</button>` +
-    `<label><input type="checkbox" data-decisions${showDecisions ? ' checked' : ''}> decisions</label>` +
-    `<button data-code="${i}">Full code</button></span>`;
-}
-
-function decisionsHTML(path) {
-  const key = path.decisions.filter((d) => d.key);
-  if (!key.length) return '<div class="decisions muted">No decisions on this path.</div>';
-  return '<ul class="decisions">' + key.map((d) =>
-    `<li>${esc(d.label)} → <b>${esc(d.taken)}</b> <span class="muted">line ${d.line}</span></li>`).join('') + '</ul>';
-}
-
-// pathLines shows only the lines on the path; hidden runs of code collapse
-// into a placeholder row.
-function pathLines(f, i, path) {
-  const shown = (n) => vis.has(n) || n === f.callLine;
-  const vis = new Set(path.visible);
-  const badges = new Map();
-  const addBadge = (line, cls, text) => badges.set(line, (badges.get(line) ?? '') + `<span class="badge ${cls}">${esc(text)}</span>`);
-  for (const d of path.decisions) if (d.key) addBadge(d.line, 'taken', d.taken);
-  if (!f.callLine) addBadge(path.endLine, 'endb', path.end);
-
-  let html = '';
-  for (let j = 0; j < f.lines.length; ) {
-    const n = f.from + j;
-    if (shown(n)) {
-      const cls = n === f.callLine ? 'call' : !f.callLine && n === path.endLine ? 'end' : '';
-      html += lineHTML(n, f.lines[j], fnLine(f, i, n), cls, badges.get(n) ?? '');
-      j++;
-      continue;
-    }
-    let k = j;
-    while (k < f.lines.length && !shown(f.from + k)) k++;
-    if (f.lines.slice(j, k).every((l) => l.replace(/<[^>]*>/g, '').trim() === '')) {
-      for (let m = j; m < k; m++) html += lineHTML(f.from + m, f.lines[m]);
-    } else {
-      html += `<div class="gap"><span class="ln"></span>    ⋯ ${k - j} line${k - j > 1 ? 's' : ''} not on this path</div>`;
-    }
-    j = k;
-  }
-  return html;
-}
-
-async function showPaths(id, frameIdx) {
+async function openTrace(fid, call) {
   closePopover();
-  if (frameIdx === null) {
-    stack = [await frame(id, null)];
-    frameIdx = 0;
-    main.scrollTop = 0;
-  }
-  const f = stack[frameIdx];
-  const d = await getJSON(`/api/paths?id=${enc(id)}${f.callLine ? `&through=${f.callLine}` : ''}`);
-  Object.assign(f, { mode: 'paths', paths: { list: d.paths, truncated: d.truncated }, pathIdx: 0 });
-  renderStack();
+  root = await loadNode(fid);
+  if (call) attach(root, await loadNode(call.id), call);
+  renderTrace();
+  main.querySelector('.nest')?.scrollIntoView({ block: 'nearest' });
 }
 
-// ---- function popover: execution paths + callers ----
-
-async function openPopover(line) {
+async function expand(node, call) {
   closePopover();
-  const id = line.dataset.fn;
-  const frameIdx = line.dataset.frame === undefined ? null : Number(line.dataset.frame);
-  const f = frameIdx === null ? null : stack[frameIdx];
-  const through = f?.callLine ?? 0;
-  const [callers, count] = await Promise.all([
-    f ? f.callers : getJSON('/api/func?id=' + enc(id)).then((d) => d.callers),
-    f?.mode === 'paths' ? null : getJSON(`/api/paths?count=1&id=${enc(id)}${through ? `&through=${through}` : ''}`),
-  ]);
+  attach(node, await loadNode(call.id), call);
+  renderTrace();
+}
 
-  let html = f?.mode === 'paths'
-    ? '<button data-act="code">Show full code</button>'
-    : `<button data-act="paths">⑂ ${through ? 'Paths that reach this call' : 'Execution paths'} ` +
-      `<span class="muted">(${count.count}${count.truncated ? '+' : ''})</span></button>`;
-  html += '<hr>';
-  html += callers.length
-    ? `<div class="muted">Called by (${callers.length}):</div>` +
-      callers.map((c, i) => `<button data-i="${i}">${esc(c.callerName)} <span class="muted">${esc(c.file)}:${c.line}</span></button>`).join('')
-    : '<div class="muted">No static callers.</div>';
+function collapse(node, key) {
+  closePopover();
+  node.children.delete(key);
+  if (node.wrapped === key) node.wrapped = node.restFrom = null;
+  renderTrace();
+}
 
+// wrap makes the caller (call.caller) the new root, with node expanded inline
+// at the call site. Boxes outside node are dropped.
+async function wrap(node, call) {
+  closePopover();
+  const caller = await loadNode(call.caller);
+  node.parent?.children.delete(node.key);
+  attach(caller, node, call);
+  caller.restFrom = call.line;
+  caller.wrapped = node.key;
+  root = caller;
+  renderTrace();
+  main.scrollTop = 0;
+}
+
+function unwrap() {
+  const child = root.children.get(root.wrapped);
+  child.parent = child.key = null;
+  root = child;
+  renderTrace();
+}
+
+function renderTrace() {
+  main.innerHTML = boxHTML(root, 0);
+}
+
+function boxHTML(node, depth) {
+  const f = node.func;
+  let h = `<section class="box d${depth % 6}"><header><b>${esc(f.name)}</b>` +
+    `<a class="link" data-open="${esc(f.file)}" data-line="${f.start}">${esc(f.file)}:${f.start}</a><span class="spacer"></span>`;
+  if (node === root) {
+    if (node.wrapped) h += '<button data-unwrap title="Remove this caller">×</button>';
+    if (current) h += `<button data-open="${esc(current.file)}">← ${esc(current.file.split('/').pop())}</button>`;
+  } else {
+    h += `<button data-collapse="${node.parent.uid}" data-key="${node.key}" title="Collapse">×</button>`;
+  }
+  h += '</header><div class="code chroma">';
+
+  const kidsByLine = new Map();
+  for (const [key, kid] of node.children) {
+    const [line, col] = key.split(':').map(Number);
+    if (!kidsByLine.has(line)) kidsByLine.set(line, []);
+    kidsByLine.get(line).push([col, kid]);
+  }
+  for (let j = 0; j < node.lines.length; j++) {
+    const n = node.from + j;
+    if (node.restFrom && !node.restOpen && n > node.restFrom) {
+      const left = node.lines.length - j;
+      h += `<div class="line gap" data-rest="${node.uid}"><span class="mk"></span><span class="ln"></span>` +
+        `   ⋯ rest of ${esc(f.name)} after the call (${left} line${left > 1 ? 's' : ''})</div>`;
+      break;
+    }
+    const kids = (kidsByLine.get(n) ?? []).sort((a, b) => a[0] - b[0]);
+    h += lineHTML(n, node.lines[j], {
+      fn: n === f.start && { id: f.id, callers: node.callers.length, uid: node.uid },
+      mk: marker(node.calls.get(n), kids.length > 0),
+      mkAttrs: ` data-uid="${node.uid}"`,
+      cls: kids.length ? 'call' : '',
+    });
+    for (const [, kid] of kids) h += `<div class="nest">${boxHTML(kid, depth + 1)}</div>`;
+  }
+  return h + '</div></section>';
+}
+
+// ---- popovers ----
+
+function showPopover(anchor, html, onclick) {
+  closePopover();
   popover = document.createElement('div');
   popover.className = 'popover';
   popover.innerHTML = html;
-  const lr = line.getBoundingClientRect(), mr = main.getBoundingClientRect();
-  popover.style.top = `${lr.bottom - mr.top + main.scrollTop}px`;
-  popover.style.left = `${lr.left - mr.left + main.scrollLeft + 48}px`;
+  const ar = anchor.getBoundingClientRect(), mr = main.getBoundingClientRect();
+  popover.style.top = `${ar.bottom - mr.top + main.scrollTop}px`;
+  popover.style.left = `${ar.left - mr.left + main.scrollLeft + 24}px`;
   popover.onclick = (e) => {
     const b = e.target.closest('button');
-    if (!b) return;
-    if (b.dataset.act === 'paths') showPaths(id, frameIdx);
-    else if (b.dataset.act === 'code') { closePopover(); f.mode = 'code'; renderStack(); }
-    else chooseCaller(id, frameIdx, callers[b.dataset.i]);
+    if (b) onclick(b);
   };
   main.appendChild(popover);
 }
@@ -311,44 +321,64 @@ function closePopover() {
   popover = null;
 }
 
-async function chooseCaller(id, frameIdx, call) {
-  closePopover();
-  if (frameIdx === null) stack = [await frame(id, null)];
-  else stack.length = frameIdx + 1; // picking a caller for a lower pane replaces the panes above it
-  stack.push(await frame(call.caller, call.line));
-  renderStack();
-  main.scrollTop = 0;
+function cantExpand(c) {
+  if (c.kind === 'interface') {
+    return `<div class="warn">⚠ <b>${esc(c.name)}</b> is an interface method. Which implementation runs is decided at run time, so there's no single body to expand.</div>`;
+  }
+  return `<div class="warn">⚠ <b>${esc(c.name)}(…)</b> calls a function value. Its target is decided at run time, so it can't be expanded.</div>`;
+}
+
+// onMarker handles a click on a line's call marker, in a trace box (node) or
+// the file view (node null). A single expandable call toggles directly; other
+// cases show a popover with each call and warnings for ones that can't expand.
+function onMarker(mk, node) {
+  const line = Number(mk.dataset.line);
+  const calls = node ? node.calls.get(line) : current.calls.get(line).map((x) => x.call);
+  const fid = node ? null : current.calls.get(line)[0].fid;
+  const act = (c) => {
+    if (!node) return openTrace(fid, c);
+    if (node.children.has(callKey(c))) return collapse(node, callKey(c));
+    return expand(node, c);
+  };
+  if (calls.length === 1 && calls[0].kind === 'static') return act(calls[0]);
+
+  const html = calls.map((c, i) => c.kind !== 'static' ? cantExpand(c)
+    : `<button data-i="${i}">${node?.children.has(callKey(c)) ? '▾ collapse' : '▸'} ${esc(c.name)}</button>`).join('');
+  showPopover(mk, html, (b) => act(calls[b.dataset.i]));
+}
+
+// onFuncLine shows a function's callers; choosing one wraps the function in it.
+async function onFuncLine(line) {
+  const node = line.dataset.uid ? nodes.get(Number(line.dataset.uid)) : null;
+  const callers = node ? node.callers : (await getJSON('/api/func?id=' + enc(line.dataset.fn))).callers;
+  let html = callers.length
+    ? `<div class="muted">Called by (${callers.length}):</div>` +
+      callers.map((c, i) => `<button data-i="${i}">${esc(c.callerName)} <span class="muted">${esc(c.file)}:${c.line}</span></button>`).join('')
+    : '<div class="muted">No static callers.</div>';
+  if (node && node !== root && callers.length) html += '<div class="muted">Choosing a caller replaces the boxes around this one.</div>';
+  showPopover(line, html, async (b) => {
+    const call = callers[b.dataset.i];
+    wrap(node ?? await loadNode(line.dataset.fn), call);
+  });
 }
 
 // ---- events ----
 
 main.onclick = (e) => {
   if (popover?.contains(e.target)) return;
-  const open = e.target.closest('[data-open]');
+  const t = e.target;
+  const open = t.closest('[data-open]');
   if (open) return openFile(open.dataset.open, open.dataset.line);
-  const pop = e.target.closest('[data-pop]');
-  if (pop) { stack.length = Number(pop.dataset.pop); return renderStack(); }
-  const nav = e.target.closest('[data-nav]');
-  if (nav) {
-    const f = stack[nav.dataset.frame], n = f.paths.list.length;
-    f.pathIdx = (f.pathIdx + Number(nav.dataset.nav) + n) % n;
-    return renderStack();
-  }
-  const code = e.target.closest('[data-code]');
-  if (code) { stack[code.dataset.code].mode = 'code'; return renderStack(); }
-  const fn = e.target.closest('.fn');
-  if (fn && !window.getSelection().toString()) return openPopover(fn);
+  if (t.closest('[data-unwrap]')) return unwrap();
+  const col = t.closest('[data-collapse]');
+  if (col) return collapse(nodes.get(Number(col.dataset.collapse)), col.dataset.key);
+  const rest = t.closest('[data-rest]');
+  if (rest) { nodes.get(Number(rest.dataset.rest)).restOpen = true; return renderTrace(); }
+  const mk = t.closest('.mk[data-line]');
+  if (mk) return onMarker(mk, mk.dataset.uid ? nodes.get(Number(mk.dataset.uid)) : null);
+  const fn = t.closest('.fn');
+  if (fn && !window.getSelection().toString()) return onFuncLine(fn);
   closePopover();
-};
-main.onchange = (e) => {
-  if (e.target.matches('[data-pathsel]')) {
-    stack[e.target.dataset.pathsel].pathIdx = Number(e.target.value);
-    renderStack();
-  } else if (e.target.matches('[data-decisions]')) {
-    showDecisions = e.target.checked;
-    localStorage.setItem('showDecisions', showDecisions ? '1' : '');
-    renderStack();
-  }
 };
 document.onkeydown = (e) => { if (e.key === 'Escape') closePopover(); };
 document.addEventListener('mousedown', (e) => {

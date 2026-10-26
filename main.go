@@ -65,7 +65,6 @@ func main() {
 	mux.HandleFunc("GET /api/file", s.handleFile)
 	mux.HandleFunc("GET /api/func", s.handleFunc)
 	mux.HandleFunc("GET /api/lines", s.handleLines)
-	mux.HandleFunc("GET /api/paths", s.handlePaths)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
 
 	log.Printf("serving %s on http://%s", root, *addr)
@@ -126,12 +125,13 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	type item struct {
 		*Func
-		Callers int `json:"callers"`
+		Callers int      `json:"callers"`
+		Calls   []Callee `json:"calls"`
 	}
 	funcs := []item{}
 	for _, f := range idx.Funcs {
 		if f.File == file {
-			funcs = append(funcs, item{f, len(idx.Callers[f.ID])})
+			funcs = append(funcs, item{f, len(idx.Callers[f.ID]), nonNil(idx.Calls[f.ID])})
 		}
 	}
 	slices.SortFunc(funcs, func(a, b item) int { return cmp.Compare(a.Start, b.Start) })
@@ -145,11 +145,19 @@ func (s *server) handleFunc(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown function", http.StatusNotFound)
 		return
 	}
-	callers := idx.Callers[f.ID]
-	if callers == nil {
-		callers = []Call{}
+	writeJSON(w, map[string]any{
+		"func":    f,
+		"callers": nonNil(idx.Callers[f.ID]),
+		"calls":   nonNil(idx.Calls[f.ID]),
+	})
+}
+
+// nonNil makes empty lists encode as [] rather than null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
 	}
-	writeJSON(w, map[string]any{"func": f, "callers": callers})
+	return s
 }
 
 // handleLines returns highlighted HTML for lines [from, to] (1-based, inclusive)
@@ -176,31 +184,6 @@ func (s *server) handleLines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"from": from, "lines": lines[from-1 : to]})
-}
-
-// handlePaths returns execution paths through a function. With through=N,
-// only paths reaching line N (a call site in a caller pane). With count=1,
-// only the number of paths.
-func (s *server) handlePaths(w http.ResponseWriter, r *http.Request) {
-	idx, _ := s.state()
-	q := r.URL.Query()
-	pf, ok := idx.Syntax[q.Get("id")]
-	if !ok {
-		http.Error(w, "unknown function", http.StatusNotFound)
-		return
-	}
-	through, _ := strconv.Atoi(q.Get("through"))
-	if q.Get("count") != "" {
-		n, truncated := pf.Count(10000, through)
-		writeJSON(w, map[string]any{"count": n, "truncated": truncated})
-		return
-	}
-	list, truncated, err := pf.Paths(300, through)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"paths": list, "truncated": truncated})
 }
 
 func (s *server) handleReload(w http.ResponseWriter, r *http.Request) {

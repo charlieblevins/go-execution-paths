@@ -13,9 +13,13 @@ go-execution-paths /path/to/module -tests   # include _test.go files
 go-execution-paths -dir /path/to/module ./cmd/... ./internal/...   # custom package patterns
 ```
 
-Pick a file in the tree, click a function definition to list its callers, and
-pick one to show it above. Use the ↻ button after editing code to reload
-packages from disk.
+Pick a file in the tree. Click ▸ next to a call to expand the callee's body
+inline (▾ collapses it; nested calls expand the same way). Click a function
+definition to list its callers; picking one wraps the current view in that
+caller, with the function shown inline at the call site and the rest of the
+caller collapsed. A grey ▹ marks calls through interfaces or function values,
+which can't be expanded because their target is decided at run time. Use the ↻
+button after editing code to reload packages from disk.
 
 Build with a Go toolchain at least as new as the module you're analyzing
 (e.g. `GOTOOLCHAIN=go1.27.0 go install ...`), since type-checking uses the
