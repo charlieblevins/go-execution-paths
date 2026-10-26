@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charlieblevins/go-execution-paths/internal/paths"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -34,8 +35,9 @@ type Call struct {
 type Index struct {
 	Root    string
 	Funcs   map[string]*Func
-	Callers map[string][]Call // callee ID -> call sites
-	Files   map[string]string // relative path -> absolute path
+	Syntax  map[string]*paths.Func // Func.ID -> declaration, for path enumeration
+	Callers map[string][]Call      // callee ID -> call sites
+	Files   map[string]string      // relative path -> absolute path
 	Errors  []string
 }
 
@@ -54,6 +56,7 @@ func Load(root string, patterns []string, tests bool) (*Index, error) {
 	idx := &Index{
 		Root:    root,
 		Funcs:   map[string]*Func{},
+		Syntax:  map[string]*paths.Func{},
 		Callers: map[string][]Call{},
 		Files:   map[string]string{},
 	}
@@ -94,6 +97,7 @@ func Load(root string, patterns []string, tests bool) (*Index, error) {
 				}
 				if _, dup := idx.Funcs[fn.ID]; !dup {
 					idx.Funcs[fn.ID] = fn
+					idx.Syntax[fn.ID] = &paths.Func{Fset: p.Fset, File: f, Decl: d, Info: p.TypesInfo}
 				}
 
 				ast.Inspect(d.Body, func(n ast.Node) bool {

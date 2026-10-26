@@ -65,6 +65,7 @@ func main() {
 	mux.HandleFunc("GET /api/file", s.handleFile)
 	mux.HandleFunc("GET /api/func", s.handleFunc)
 	mux.HandleFunc("GET /api/lines", s.handleLines)
+	mux.HandleFunc("GET /api/paths", s.handlePaths)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
 
 	log.Printf("serving %s on http://%s", root, *addr)
@@ -175,6 +176,31 @@ func (s *server) handleLines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"from": from, "lines": lines[from-1 : to]})
+}
+
+// handlePaths returns execution paths through a function. With through=N,
+// only paths reaching line N (a call site in a caller pane). With count=1,
+// only the number of paths.
+func (s *server) handlePaths(w http.ResponseWriter, r *http.Request) {
+	idx, _ := s.state()
+	q := r.URL.Query()
+	pf, ok := idx.Syntax[q.Get("id")]
+	if !ok {
+		http.Error(w, "unknown function", http.StatusNotFound)
+		return
+	}
+	through, _ := strconv.Atoi(q.Get("through"))
+	if q.Get("count") != "" {
+		n, truncated := pf.Count(10000, through)
+		writeJSON(w, map[string]any{"count": n, "truncated": truncated})
+		return
+	}
+	list, truncated, err := pf.Paths(300, through)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"paths": list, "truncated": truncated})
 }
 
 func (s *server) handleReload(w http.ResponseWriter, r *http.Request) {

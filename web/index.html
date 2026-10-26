@@ -22,19 +22,29 @@
   .pane { border: 1px solid #ddd; border-radius: 4px; margin-bottom: 4px; }
   .pane header { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; background: #f6f8fa; border-bottom: 1px solid #ddd; font: 12px ui-monospace, monospace; }
   .pane header b { font-size: 13px; }
-  .pane header button { margin-left: auto; }
+  .pane header .spacer { flex: 1; }
+  .pathnav { display: inline-flex; gap: 4px; align-items: center; }
+  .pathnav select { max-width: 360px; font: 12px ui-monospace, monospace; }
+  .decisions { margin: 0; padding: 6px 8px 6px 28px; background: #fafbfc; border-bottom: 1px solid #ddd; font: 12px ui-monospace, monospace; }
+  div.decisions { padding-left: 8px; }
   pre.code { margin: 0; padding: 4px 0; font: 13px/1.45 ui-monospace, monospace; overflow-x: auto; }
   pre.code div { padding-right: 8px; white-space: pre; }
   pre.code .ln { display: inline-block; width: 4em; padding-right: 1em; text-align: right; color: #aaa; user-select: none; }
   pre.code .fn { cursor: pointer; }
   pre.code .fn:hover { background: #eef3ff; }
   pre.code .call { background: #fff3b0; }
+  pre.code .end { background: #e6ffec; }
+  pre.code .gap { color: #999; background: #f6f8fa; font-style: italic; }
   .badge { display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 8px; background: #e4e8ee; color: #555; font-size: 11px; }
+  .badge.taken { background: #fff3b0; color: #6b5300; }
+  .badge.endb { background: #c9f2d3; color: #116329; }
   .arrow { text-align: center; color: #aaa; margin-bottom: 4px; }
   .popover { position: absolute; z-index: 10; max-height: 50vh; overflow: auto; min-width: 300px; padding: 4px; background: #fff; border: 1px solid #bbb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
   .popover button { display: block; width: 100%; padding: 3px 6px; border: 0; background: none; text-align: left; font: 12px ui-monospace, monospace; cursor: pointer; }
   .popover button:hover { background: #eef; }
   .popover .muted { padding: 3px 6px; font-size: 12px; }
+  .popover button .muted { padding: 0; }
+  .popover hr { margin: 4px 0; border: 0; border-top: 1px solid #ddd; }
 </style>
 </head>
 <body>
@@ -137,63 +147,161 @@ async function openFile(file, line) {
   else main.scrollTop = 0;
 }
 
-// fn, if set, makes the line a clickable function definition.
-function lineHTML(n, html, fn, cls = '') {
+// fn, if set, makes the line a clickable function definition. extra is
+// appended HTML (badges).
+function lineHTML(n, html, fn, cls = '', extra = '') {
   if (fn) cls += ' fn';
   const attrs = fn ? ` data-fn="${esc(fn.id)}"${fn.frame !== undefined ? ` data-frame="${fn.frame}"` : ''}` : '';
   const badge = fn ? `<span class="badge" title="callers">${fn.callers}</span>` : '';
-  return `<div data-line="${n}" class="${cls.trim()}"${attrs}><span class="ln">${n}</span>${html}${badge}</div>`;
+  return `<div data-line="${n}" class="${cls.trim()}"${attrs}><span class="ln">${n}</span>${html}${badge}${extra}</div>`;
 }
 
 // ---- stacked view ----
 
+// mode is 'code' or 'paths'. In paths mode, paths.list holds the function's
+// paths (for a caller pane, only those reaching callLine) and pathIdx the
+// selected one.
 async function frame(id, callLine) {
   const { func, callers } = await getJSON('/api/func?id=' + enc(id));
   const { from, lines } = await getJSON(`/api/lines?file=${enc(func.file)}&from=${func.start}&to=${callLine ?? func.end}`);
-  return { func, callers, callLine, from, lines };
+  return { func, callers, callLine, from, lines, mode: 'code', paths: null, pathIdx: 0 };
 }
 
 function renderStack() {
   let html = '';
   for (let i = stack.length - 1; i >= 0; i--) {
     const f = stack[i];
+    const path = f.mode === 'paths' ? f.paths.list[f.pathIdx] : null;
     html += `<section class="pane"><header><b>${esc(f.func.name)}</b>` +
       `<a class="link" data-open="${esc(f.func.file)}" data-line="${f.func.start}">${esc(f.func.file)}:${f.func.start}</a>`;
+    if (f.mode === 'paths') html += pathControls(f, i);
+    html += '<span class="spacer"></span>';
     if (i > 0) html += `<button data-pop="${i}" title="Remove this and the panes above it">×</button>`;
     else html += `<button data-open="${esc(current.file)}">← ${esc(current.file.split('/').pop())}</button>`;
-    html += '</header><pre class="code chroma">';
-    html += f.lines.map((l, j) => {
-      const n = f.from + j;
-      const fn = n === f.func.start && { id: f.func.id, callers: f.callers.length, frame: i };
-      return lineHTML(n, l, fn, n === f.callLine ? 'call' : '');
-    }).join('');
-    html += '</pre></section>';
+    html += '</header>';
+    if (path && showDecisions) html += decisionsHTML(path);
+    html += `<pre class="code chroma">${path ? pathLines(f, i, path) : codeLines(f, i)}</pre></section>`;
     if (i > 0) html += '<div class="arrow">↓</div>';
   }
   main.innerHTML = html;
 }
 
-// ---- callers popover ----
+const fnLine = (f, i, n) => n === f.func.start && { id: f.func.id, callers: f.callers.length, frame: i };
+
+function codeLines(f, i) {
+  return f.lines.map((l, j) => {
+    const n = f.from + j;
+    return lineHTML(n, l, fnLine(f, i, n), n === f.callLine ? 'call' : '');
+  }).join('');
+}
+
+// ---- execution paths ----
+
+let showDecisions = localStorage.getItem('showDecisions') === '1';
+
+const endText = (p) => p.end === 'reaches line' ? 'reaches the call' : `${p.end} at line ${p.endLine}`;
+
+function pathControls(f, i) {
+  const n = f.paths.list.length;
+  if (!n) {
+    return `<span class="muted">${f.callLine ? 'no paths reach this call' : 'no paths found'}</span>` +
+      `<button data-code="${i}">Full code</button>`;
+  }
+  const opts = f.paths.list.map((p, k) =>
+    `<option value="${k}"${k === f.pathIdx ? ' selected' : ''}>Path ${k + 1} of ${n}${f.paths.truncated ? '+' : ''} · ${esc(endText(p))}</option>`).join('');
+  return `<span class="pathnav"><button data-nav="-1" data-frame="${i}" title="Previous path">◀</button>` +
+    `<select data-pathsel="${i}">${opts}</select>` +
+    `<button data-nav="1" data-frame="${i}" title="Next path">▶</button>` +
+    `<label><input type="checkbox" data-decisions${showDecisions ? ' checked' : ''}> decisions</label>` +
+    `<button data-code="${i}">Full code</button></span>`;
+}
+
+function decisionsHTML(path) {
+  const key = path.decisions.filter((d) => d.key);
+  if (!key.length) return '<div class="decisions muted">No decisions on this path.</div>';
+  return '<ul class="decisions">' + key.map((d) =>
+    `<li>${esc(d.label)} → <b>${esc(d.taken)}</b> <span class="muted">line ${d.line}</span></li>`).join('') + '</ul>';
+}
+
+// pathLines shows only the lines on the path; hidden runs of code collapse
+// into a placeholder row.
+function pathLines(f, i, path) {
+  const shown = (n) => vis.has(n) || n === f.callLine;
+  const vis = new Set(path.visible);
+  const badges = new Map();
+  const addBadge = (line, cls, text) => badges.set(line, (badges.get(line) ?? '') + `<span class="badge ${cls}">${esc(text)}</span>`);
+  for (const d of path.decisions) if (d.key) addBadge(d.line, 'taken', d.taken);
+  if (!f.callLine) addBadge(path.endLine, 'endb', path.end);
+
+  let html = '';
+  for (let j = 0; j < f.lines.length; ) {
+    const n = f.from + j;
+    if (shown(n)) {
+      const cls = n === f.callLine ? 'call' : !f.callLine && n === path.endLine ? 'end' : '';
+      html += lineHTML(n, f.lines[j], fnLine(f, i, n), cls, badges.get(n) ?? '');
+      j++;
+      continue;
+    }
+    let k = j;
+    while (k < f.lines.length && !shown(f.from + k)) k++;
+    if (f.lines.slice(j, k).every((l) => l.replace(/<[^>]*>/g, '').trim() === '')) {
+      for (let m = j; m < k; m++) html += lineHTML(f.from + m, f.lines[m]);
+    } else {
+      html += `<div class="gap"><span class="ln"></span>    ⋯ ${k - j} line${k - j > 1 ? 's' : ''} not on this path</div>`;
+    }
+    j = k;
+  }
+  return html;
+}
+
+async function showPaths(id, frameIdx) {
+  closePopover();
+  if (frameIdx === null) {
+    stack = [await frame(id, null)];
+    frameIdx = 0;
+    main.scrollTop = 0;
+  }
+  const f = stack[frameIdx];
+  const d = await getJSON(`/api/paths?id=${enc(id)}${f.callLine ? `&through=${f.callLine}` : ''}`);
+  Object.assign(f, { mode: 'paths', paths: { list: d.paths, truncated: d.truncated }, pathIdx: 0 });
+  renderStack();
+}
+
+// ---- function popover: execution paths + callers ----
 
 async function openPopover(line) {
   closePopover();
   const id = line.dataset.fn;
   const frameIdx = line.dataset.frame === undefined ? null : Number(line.dataset.frame);
-  const callers = frameIdx === null
-    ? (await getJSON('/api/func?id=' + enc(id))).callers
-    : stack[frameIdx].callers;
+  const f = frameIdx === null ? null : stack[frameIdx];
+  const through = f?.callLine ?? 0;
+  const [callers, count] = await Promise.all([
+    f ? f.callers : getJSON('/api/func?id=' + enc(id)).then((d) => d.callers),
+    f?.mode === 'paths' ? null : getJSON(`/api/paths?count=1&id=${enc(id)}${through ? `&through=${through}` : ''}`),
+  ]);
+
+  let html = f?.mode === 'paths'
+    ? '<button data-act="code">Show full code</button>'
+    : `<button data-act="paths">⑂ ${through ? 'Paths that reach this call' : 'Execution paths'} ` +
+      `<span class="muted">(${count.count}${count.truncated ? '+' : ''})</span></button>`;
+  html += '<hr>';
+  html += callers.length
+    ? `<div class="muted">Called by (${callers.length}):</div>` +
+      callers.map((c, i) => `<button data-i="${i}">${esc(c.callerName)} <span class="muted">${esc(c.file)}:${c.line}</span></button>`).join('')
+    : '<div class="muted">No static callers.</div>';
 
   popover = document.createElement('div');
   popover.className = 'popover';
-  popover.innerHTML = callers.length
-    ? callers.map((c, i) => `<button data-i="${i}">${esc(c.callerName)} <span class="muted">${esc(c.file)}:${c.line}</span></button>`).join('')
-    : '<div class="muted">No static callers.</div>';
+  popover.innerHTML = html;
   const lr = line.getBoundingClientRect(), mr = main.getBoundingClientRect();
   popover.style.top = `${lr.bottom - mr.top + main.scrollTop}px`;
   popover.style.left = `${lr.left - mr.left + main.scrollLeft + 48}px`;
   popover.onclick = (e) => {
     const b = e.target.closest('button');
-    if (b) chooseCaller(id, frameIdx, callers[b.dataset.i]);
+    if (!b) return;
+    if (b.dataset.act === 'paths') showPaths(id, frameIdx);
+    else if (b.dataset.act === 'code') { closePopover(); f.mode = 'code'; renderStack(); }
+    else chooseCaller(id, frameIdx, callers[b.dataset.i]);
   };
   main.appendChild(popover);
 }
@@ -220,9 +328,27 @@ main.onclick = (e) => {
   if (open) return openFile(open.dataset.open, open.dataset.line);
   const pop = e.target.closest('[data-pop]');
   if (pop) { stack.length = Number(pop.dataset.pop); return renderStack(); }
+  const nav = e.target.closest('[data-nav]');
+  if (nav) {
+    const f = stack[nav.dataset.frame], n = f.paths.list.length;
+    f.pathIdx = (f.pathIdx + Number(nav.dataset.nav) + n) % n;
+    return renderStack();
+  }
+  const code = e.target.closest('[data-code]');
+  if (code) { stack[code.dataset.code].mode = 'code'; return renderStack(); }
   const fn = e.target.closest('.fn');
   if (fn && !window.getSelection().toString()) return openPopover(fn);
   closePopover();
+};
+main.onchange = (e) => {
+  if (e.target.matches('[data-pathsel]')) {
+    stack[e.target.dataset.pathsel].pathIdx = Number(e.target.value);
+    renderStack();
+  } else if (e.target.matches('[data-decisions]')) {
+    showDecisions = e.target.checked;
+    localStorage.setItem('showDecisions', showDecisions ? '1' : '');
+    renderStack();
+  }
 };
 document.onkeydown = (e) => { if (e.key === 'Escape') closePopover(); };
 document.addEventListener('mousedown', (e) => {

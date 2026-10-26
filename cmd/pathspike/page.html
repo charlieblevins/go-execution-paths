@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{if .Func}}{{.Func.Name}}{{else}}Execution paths{{end}}</title>
+<style>
+  {{.CSS}}
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+  a { color: #0550ae; }
+  .muted { color: #888; }
+  .index { padding: 16px 24px; }
+  .index li { margin: 6px 0; font-family: ui-monospace, monospace; }
+  .wrap { display: flex; height: 100vh; }
+  #side { width: 360px; overflow: auto; border-right: 1px solid #ddd; font-size: 12px; }
+  #side header { padding: 10px 12px; border-bottom: 1px solid #ddd; }
+  #side header b { display: block; font: 13px ui-monospace, monospace; word-break: break-all; }
+  #side label { display: block; margin-top: 6px; }
+  .path { padding: 6px 12px; border-bottom: 1px solid #eee; cursor: pointer; }
+  .path:hover { background: #f3f6ff; }
+  .path.sel { background: #dde4ff; }
+  .path .t { font-weight: 600; }
+  .path ul { display: none; margin: 2px 0 0; padding-left: 16px; font-family: ui-monospace, monospace; color: #444; }
+  #paths.decisions .path ul { display: block; }
+  #main { flex: 1; overflow: auto; }
+  pre.code { margin: 0; padding: 8px 0; font: 13px/1.45 ui-monospace, monospace; }
+  pre.code div { white-space: pre; padding-right: 12px; }
+  pre.code .ln { display: inline-block; width: 4em; padding-right: 1em; text-align: right; color: #aaa; user-select: none; }
+  pre.code .gap { color: #999; background: #f6f8fa; font-style: italic; }
+  pre.code .dim { opacity: .25; }
+  pre.code .end { background: #e6ffec; }
+  .badge { display: inline-block; margin-left: 10px; padding: 0 6px; border-radius: 8px; background: #fff3b0; color: #6b5300; font: 11px system-ui, sans-serif; }
+  .badge.endb { background: #c9f2d3; color: #116329; }
+</style>
+</head>
+<body>
+{{if .Index}}
+<div class="index">
+  <h2>Execution paths prototype</h2>
+  <ul>
+  {{range .Index}}<li><a href="{{.Href}}">{{.Name}}</a> <span class="muted">{{.File}} · {{.Paths}}{{if .Truncated}}+{{end}} paths</span></li>
+  {{end}}</ul>
+</div>
+{{else}}
+<div class="wrap">
+  <nav id="side">
+    <header>
+      <a href="index.html">← all functions</a>
+      <b id="name"></b>
+      <span class="muted" id="meta"></span>
+      <label><input type="checkbox" id="decisions"> show decisions</label>
+      <label><input type="checkbox" id="dim"> dim off-path code instead of hiding it</label>
+      <div class="muted" style="margin-top:6px">Click a path to show only its code; click again (or Esc) for the full source. ↑/↓ to step through paths.</div>
+    </header>
+    <div id="paths"></div>
+  </nav>
+  <main id="main"><pre class="code chroma" id="code"></pre></main>
+</div>
+<script>
+const DATA = {{.Func}};
+const $ = (s) => document.querySelector(s);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+let selected = -1;
+
+$('#name').textContent = DATA.name;
+$('#meta').textContent = `${DATA.file}:${DATA.start} · ${DATA.paths.length}${DATA.truncated ? '+ (truncated)' : ''} paths`;
+
+$('#paths').innerHTML = DATA.paths.map((p, i) => {
+  const key = p.decisions.filter((s) => s.key);
+  return `<div class="path" data-i="${i}"><span class="t">Path ${i + 1}</span> <span class="muted">· ${p.end} at line ${p.endLine}</span>` +
+    (key.length ? `<ul>${key.map((s) => `<li>${esc(s.label)} → <b>${esc(s.taken)}</b></li>`).join('')}</ul>` : '') +
+    '</div>';
+}).join('');
+
+function render() {
+  const lines = DATA.lines;
+  const path = DATA.paths[selected];
+  for (const el of document.querySelectorAll('.path')) el.classList.toggle('sel', Number(el.dataset.i) === selected);
+  const row = (n, cls = '', extra = '') =>
+    `<div class="${cls}"><span class="ln">${n}</span>${lines[n - DATA.start]}${extra}</div>`;
+
+  if (!path) {
+    $('#code').innerHTML = lines.map((_, j) => row(DATA.start + j)).join('');
+    return;
+  }
+  const vis = new Set(path.visible);
+  const badges = new Map();
+  for (const s of path.decisions) {
+    if (!s.key) continue; // "no match" / "not chosen" are implied by the hidden case bodies
+    const b = `<span class="badge">${esc(s.taken)}</span>`;
+    badges.set(s.line, (badges.get(s.line) ?? '') + b);
+  }
+  badges.set(path.endLine, (badges.get(path.endLine) ?? '') + `<span class="badge endb">${esc(path.end)}</span>`);
+
+  const dim = $('#dim').checked;
+  let html = '';
+  for (let j = 0; j < lines.length; ) {
+    const n = DATA.start + j;
+    if (vis.has(n)) {
+      html += row(n, n === path.endLine ? 'end' : '', badges.get(n) ?? '');
+      j++;
+      continue;
+    }
+    let k = j;
+    while (k < lines.length && !vis.has(DATA.start + k)) k++;
+    const hidden = lines.slice(j, k);
+    if (dim || hidden.every((l) => l.replace(/<[^>]*>/g, '').trim() === '')) {
+      for (let m = j; m < k; m++) html += row(DATA.start + m, dim ? 'dim' : '');
+    } else {
+      html += `<div class="gap"><span class="ln"></span>    ⋯ ${k - j} line${k - j > 1 ? 's' : ''} not on this path</div>`;
+    }
+    j = k;
+  }
+  $('#code').innerHTML = html;
+}
+
+function select(i) {
+  selected = i === selected ? -1 : i;
+  render();
+  document.querySelector('.path.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+$('#paths').onclick = (e) => {
+  const p = e.target.closest('.path');
+  if (p) select(Number(p.dataset.i));
+};
+$('#dim').onchange = render;
+$('#decisions').onchange = (e) => $('#paths').classList.toggle('decisions', e.target.checked);
+document.onkeydown = (e) => {
+  if (e.key === 'Escape') select(selected);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = DATA.paths.length;
+    if (!n) return;
+    const next = selected < 0 ? 0 : (selected + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+    selected = -1;
+    select(next);
+  }
+};
+render();
+</script>
+{{end}}
+</body>
+</html>
