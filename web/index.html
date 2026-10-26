@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Go execution paths</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { margin: 0; display: flex; height: 100vh; font: 14px system-ui, sans-serif; }
+  #side { width: 300px; display: flex; flex-direction: column; border-right: 1px solid #ddd; }
+  #side .bar { display: flex; gap: 4px; padding: 8px; }
+  #filter { flex: 1; padding: 4px 6px; }
+  #tree { flex: 1; overflow: auto; padding: 0 8px 8px; font: 13px ui-monospace, monospace; }
+  #tree details { padding-left: 12px; }
+  #tree > details, #tree > a { margin-left: -12px; }
+  #tree summary { cursor: pointer; white-space: nowrap; }
+  #tree a { display: block; padding-left: 26px; color: inherit; text-decoration: none; white-space: nowrap; }
+  #tree a:hover { background: #eef; }
+  #tree a.sel { background: #dde4ff; }
+  #main { flex: 1; overflow: auto; padding: 12px 16px; position: relative; }
+  a.link { color: #555; cursor: pointer; text-decoration: underline dotted; }
+  .muted { color: #888; }
+  .pane { border: 1px solid #ddd; border-radius: 4px; margin-bottom: 4px; }
+  .pane header { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; background: #f6f8fa; border-bottom: 1px solid #ddd; font: 12px ui-monospace, monospace; }
+  .pane header b { font-size: 13px; }
+  .pane header button { margin-left: auto; }
+  pre.code { margin: 0; padding: 4px 0; font: 13px/1.45 ui-monospace, monospace; overflow-x: auto; }
+  pre.code div { padding-right: 8px; white-space: pre; }
+  pre.code .ln { display: inline-block; width: 4em; padding-right: 1em; text-align: right; color: #aaa; user-select: none; }
+  pre.code .fn { cursor: pointer; }
+  pre.code .fn:hover { background: #eef3ff; }
+  pre.code .call { background: #fff3b0; }
+  .badge { display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 8px; background: #e4e8ee; color: #555; font-size: 11px; }
+  .arrow { text-align: center; color: #aaa; margin-bottom: 4px; }
+  .popover { position: absolute; z-index: 10; max-height: 50vh; overflow: auto; min-width: 300px; padding: 4px; background: #fff; border: 1px solid #bbb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+  .popover button { display: block; width: 100%; padding: 3px 6px; border: 0; background: none; text-align: left; font: 12px ui-monospace, monospace; cursor: pointer; }
+  .popover button:hover { background: #eef; }
+  .popover .muted { padding: 3px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<nav id="side">
+  <div class="bar">
+    <input id="filter" placeholder="Filter files…" autofocus>
+    <button id="reload" title="Reload packages from disk">↻</button>
+  </div>
+  <div id="tree"></div>
+</nav>
+<main id="main"><p class="muted">Pick a file on the left, then click a function definition to see its callers.</p></main>
+<script>
+const $ = (s) => document.querySelector(s);
+const main = $('#main');
+const esc = (s) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+const enc = encodeURIComponent;
+
+let files = [];
+let current = null; // the open file: {file, lines, funcs}
+// stack[0] is the function first clicked; stack[i+1] is a caller of stack[i],
+// shown from its func line down to callLine (where it calls stack[i]).
+// Empty when showing a whole file.
+let stack = [];
+let popover = null;
+
+async function getJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ---- file tree ----
+
+async function loadTree() {
+  files = await getJSON('/api/tree');
+  renderTree();
+}
+
+function renderTree() {
+  const q = $('#filter').value.toLowerCase();
+  if (q) {
+    $('#tree').innerHTML = files.filter((p) => p.toLowerCase().includes(q))
+      .map((p) => `<a href="#${enc(p)}" data-file="${esc(p)}">${esc(p)}</a>`).join('');
+  } else {
+    const root = { dirs: {}, files: [] };
+    for (const p of files) {
+      const parts = p.split('/');
+      let node = root;
+      for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: [] };
+      node.files.push(p);
+    }
+    $('#tree').innerHTML = treeHTML(root, '');
+  }
+  if (current) markTree(current.file);
+}
+
+function treeHTML(node, prefix) {
+  let html = '';
+  for (const d of Object.keys(node.dirs).sort()) {
+    const path = prefix + d + '/';
+    html += `<details data-dir="${esc(path)}"><summary>${esc(d)}</summary>${treeHTML(node.dirs[d], path)}</details>`;
+  }
+  for (const p of node.files) {
+    html += `<a href="#${enc(p)}" data-file="${esc(p)}">${esc(p.split('/').pop())}</a>`;
+  }
+  return html;
+}
+
+function markTree(file) {
+  for (const a of $('#tree').querySelectorAll('a')) a.classList.toggle('sel', a.dataset.file === file);
+  for (const d of $('#tree').querySelectorAll('details')) if (file.startsWith(d.dataset.dir)) d.open = true;
+}
+
+$('#tree').onclick = (e) => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  e.preventDefault();
+  openFile(a.dataset.file);
+};
+
+// ---- whole-file view ----
+
+async function openFile(file, line) {
+  closePopover();
+  const d = await getJSON('/api/file?file=' + enc(file));
+  current = { file, ...d };
+  stack = [];
+  history.replaceState(null, '', '#' + enc(file));
+  markTree(file);
+
+  const byLine = new Map(d.funcs.map((f) => [f.start, f]));
+  main.innerHTML = `<div class="pane"><header><b>${esc(file)}</b></header><pre class="code chroma">` +
+    d.lines.map((l, i) => {
+      const f = byLine.get(i + 1);
+      return lineHTML(i + 1, l, f && { id: f.id, callers: f.callers });
+    }).join('') + '</pre></div>';
+
+  const target = line && main.querySelector(`[data-line="${line}"]`);
+  if (target) target.scrollIntoView({ block: 'center' });
+  else main.scrollTop = 0;
+}
+
+// fn, if set, makes the line a clickable function definition.
+function lineHTML(n, html, fn, cls = '') {
+  if (fn) cls += ' fn';
+  const attrs = fn ? ` data-fn="${esc(fn.id)}"${fn.frame !== undefined ? ` data-frame="${fn.frame}"` : ''}` : '';
+  const badge = fn ? `<span class="badge" title="callers">${fn.callers}</span>` : '';
+  return `<div data-line="${n}" class="${cls.trim()}"${attrs}><span class="ln">${n}</span>${html}${badge}</div>`;
+}
+
+// ---- stacked view ----
+
+async function frame(id, callLine) {
+  const { func, callers } = await getJSON('/api/func?id=' + enc(id));
+  const { from, lines } = await getJSON(`/api/lines?file=${enc(func.file)}&from=${func.start}&to=${callLine ?? func.end}`);
+  return { func, callers, callLine, from, lines };
+}
+
+function renderStack() {
+  let html = '';
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const f = stack[i];
+    html += `<section class="pane"><header><b>${esc(f.func.name)}</b>` +
+      `<a class="link" data-open="${esc(f.func.file)}" data-line="${f.func.start}">${esc(f.func.file)}:${f.func.start}</a>`;
+    if (i > 0) html += `<button data-pop="${i}" title="Remove this and the panes above it">×</button>`;
+    else html += `<button data-open="${esc(current.file)}">← ${esc(current.file.split('/').pop())}</button>`;
+    html += '</header><pre class="code chroma">';
+    html += f.lines.map((l, j) => {
+      const n = f.from + j;
+      const fn = n === f.func.start && { id: f.func.id, callers: f.callers.length, frame: i };
+      return lineHTML(n, l, fn, n === f.callLine ? 'call' : '');
+    }).join('');
+    html += '</pre></section>';
+    if (i > 0) html += '<div class="arrow">↓</div>';
+  }
+  main.innerHTML = html;
+}
+
+// ---- callers popover ----
+
+async function openPopover(line) {
+  closePopover();
+  const id = line.dataset.fn;
+  const frameIdx = line.dataset.frame === undefined ? null : Number(line.dataset.frame);
+  const callers = frameIdx === null
+    ? (await getJSON('/api/func?id=' + enc(id))).callers
+    : stack[frameIdx].callers;
+
+  popover = document.createElement('div');
+  popover.className = 'popover';
+  popover.innerHTML = callers.length
+    ? callers.map((c, i) => `<button data-i="${i}">${esc(c.callerName)} <span class="muted">${esc(c.file)}:${c.line}</span></button>`).join('')
+    : '<div class="muted">No static callers.</div>';
+  const lr = line.getBoundingClientRect(), mr = main.getBoundingClientRect();
+  popover.style.top = `${lr.bottom - mr.top + main.scrollTop}px`;
+  popover.style.left = `${lr.left - mr.left + main.scrollLeft + 48}px`;
+  popover.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (b) chooseCaller(id, frameIdx, callers[b.dataset.i]);
+  };
+  main.appendChild(popover);
+}
+
+function closePopover() {
+  popover?.remove();
+  popover = null;
+}
+
+async function chooseCaller(id, frameIdx, call) {
+  closePopover();
+  if (frameIdx === null) stack = [await frame(id, null)];
+  else stack.length = frameIdx + 1; // picking a caller for a lower pane replaces the panes above it
+  stack.push(await frame(call.caller, call.line));
+  renderStack();
+  main.scrollTop = 0;
+}
+
+// ---- events ----
+
+main.onclick = (e) => {
+  if (popover?.contains(e.target)) return;
+  const open = e.target.closest('[data-open]');
+  if (open) return openFile(open.dataset.open, open.dataset.line);
+  const pop = e.target.closest('[data-pop]');
+  if (pop) { stack.length = Number(pop.dataset.pop); return renderStack(); }
+  const fn = e.target.closest('.fn');
+  if (fn && !window.getSelection().toString()) return openPopover(fn);
+  closePopover();
+};
+document.onkeydown = (e) => { if (e.key === 'Escape') closePopover(); };
+document.addEventListener('mousedown', (e) => {
+  if (popover && !popover.contains(e.target) && !main.contains(e.target)) closePopover();
+});
+
+$('#filter').oninput = renderTree;
+$('#reload').onclick = async () => {
+  await getJSON('/api/reload', { method: 'POST' });
+  await loadTree();
+  if (current && files.includes(current.file)) openFile(current.file);
+};
+
+loadTree().then(() => {
+  const file = decodeURIComponent(location.hash.slice(1));
+  if (files.includes(file)) openFile(file);
+});
+</script>
+</body>
+</html>
