@@ -16,10 +16,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/charlieblevins/go-execution-paths/internal/goload"
 	"github.com/charlieblevins/go-execution-paths/internal/paths"
-	"golang.org/x/tools/go/packages"
 )
 
 //go:embed page.html
@@ -45,10 +44,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pkgs, err := packages.Load(&packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
-		Dir:  root,
-	}, patterns...)
+	pkgs, err := goload.Load(root, patterns, false)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -135,18 +131,7 @@ func findDecl(decls []*decl, want string) *decl {
 	return nil
 }
 
-func displayName(fn *types.Func) string {
-	pkg := fn.Pkg().Name()
-	recv := fn.Signature().Recv()
-	if recv == nil {
-		return pkg + "." + fn.Name()
-	}
-	t := types.TypeString(recv.Type(), func(*types.Package) string { return "" })
-	if strings.HasPrefix(t, "*") {
-		return fmt.Sprintf("%s.(%s).%s", pkg, t, fn.Name())
-	}
-	return fmt.Sprintf("%s.%s.%s", pkg, t, fn.Name())
-}
+var displayName = goload.DisplayName
 
 func writeTemplate(t *template.Template, path string, data any) error {
 	f, err := os.Create(path)

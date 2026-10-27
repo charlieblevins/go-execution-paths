@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PR report: {{.Title}}</title>
+<style>
+  body { max-width: 1100px; margin: 0 auto; padding: 16px 24px 48px; font: 14px/1.5 system-ui, sans-serif; color: #1f2328; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 16px; margin: 28px 0 2px; padding-bottom: 4px; border-bottom: 1px solid #d0d7de; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .muted { color: #656d76; }
+  .note { color: #656d76; font-size: 13px; margin: 0 0 8px; }
+  table.summary { border-collapse: collapse; margin: 16px 0; }
+  table.summary th, table.summary td { padding: 4px 14px; border-bottom: 1px solid #eaeef2; text-align: right; }
+  table.summary th:first-child, table.summary td:first-child { text-align: left; }
+  table.summary td.zero { color: #bbb; }
+  details { margin: 4px 0 4px 2px; }
+  summary { cursor: pointer; font-weight: 600; }
+  summary .n { font-weight: normal; color: #656d76; }
+  .Added summary { color: #1a7f37; } .Removed summary { color: #cf222e; }
+  .Modified summary { color: #9a6700; } .Renamed summary { color: #8250df; }
+  ul.items { margin: 4px 0 8px; padding-left: 22px; }
+  ul.items li { margin: 2px 0; }
+  ul.items .links a { margin-left: 10px; font-size: 12px; }
+  .none { color: #bbb; font-weight: normal; }
+  .errors { margin-top: 32px; font-size: 12px; }
+  .toggle { margin-top: 10px; font-size: 13px; color: #656d76; }
+  body:not(.show-empty) .empty { display: none; }
+</style>
+</head>
+<body>
+<h1>Go change report: <span class="mono">{{.Title}}</span></h1>
+<div class="muted">
+  base <a class="mono" href="{{.Base.URL}}">{{printf "%.10s" .Base.SHA}}</a> (merge base with {{.Base.Ref}})
+  · head <a class="mono" href="{{.Head.URL}}">{{printf "%.10s" .Head.SHA}}</a> ({{.Head.Ref}})
+</div>
+<label class="toggle"><input type="checkbox" id="show-empty"> Show empty categories</label>
+
+{{if not .Total}}<p>No changes found.</p>{{end}}
+
+<table class="summary{{if not .Total}} empty{{end}}">
+  <tr><th></th>{{range $.Labels}}<th>{{.}}</th>{{end}}</tr>
+  {{range .Sections}}{{$s := .}}
+  <tr{{if not .Total}} class="empty"{{end}}><td><a href="#{{.ID}}">{{.Title}}</a></td>
+    {{range $.Labels}}{{$c := $s.Cell .}}<td{{if or (eq $c "0") (eq $c "")}} class="zero"{{end}}>{{if eq $c ""}}–{{else}}{{$c}}{{end}}</td>{{end}}</tr>
+  {{end}}
+</table>
+
+{{range .Sections}}
+<section{{if not .Total}} class="empty"{{end}}>
+<h2 id="{{.ID}}">{{.Title}} <span class="muted">({{.Total}})</span></h2>
+<p class="note">{{.Note}}</p>
+{{range .Groups}}
+  {{if .Items}}
+  <details class="{{index (split .Label) 0}}" open>
+    <summary>{{.Label}} <span class="n">({{len .Items}})</span></summary>
+    <ul class="items">
+      {{range .Items}}<li><code>{{.Name}}</code>{{if .Detail}} <span class="muted">{{.Detail}}</span>{{end}}<span class="links">{{range .Links}}{{if .URL}}<a href="{{.URL}}">{{.Label}}</a>{{else}}<span class="muted"> {{.Label}}</span>{{end}}{{end}}</span></li>
+      {{end}}
+    </ul>
+  </details>
+  {{else}}
+  <div class="none empty">{{.Label}}: none</div>
+  {{end}}
+{{end}}
+</section>
+{{end}}
+
+{{if .Errors}}
+<details class="errors"><summary>Load errors ({{len .Errors}})</summary>
+  <ul>{{range .Errors}}<li class="mono">{{.}}</li>{{end}}</ul>
+</details>
+{{end}}
+<script>
+  const box = document.getElementById('show-empty');
+  box.checked = localStorage.getItem('prreport.showEmpty') === '1';
+  const apply = () => document.body.classList.toggle('show-empty', box.checked);
+  box.onchange = () => { localStorage.setItem('prreport.showEmpty', box.checked ? '1' : ''); apply(); };
+  apply();
+</script>
+</body>
+</html>
